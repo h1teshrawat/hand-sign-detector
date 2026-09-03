@@ -1,6 +1,6 @@
 mediapipe
 opencv-python
-pyttsx3
+pyttsx3; sys_platform == "win32"
 numpy
 scikit-learn
 gradio
