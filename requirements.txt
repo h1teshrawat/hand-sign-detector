@@ -1,5 +1,6 @@
 mediapipe
-opencv-python
+opencv-python; sys_platform == "win32"
+opencv-python-headless; sys_platform != "win32"
 pyttsx3; sys_platform == "win32"
 numpy
 scikit-learn
