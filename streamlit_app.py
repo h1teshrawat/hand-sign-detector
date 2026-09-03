@@ -1,23 +1,31 @@
 """
 Streamlit web demo for the hand sign detector.
 
-Captures a single photo from the browser's camera, runs MediaPipe hand
-landmark detection, then classifies the sign with the trained sklearn
-model. Deploy as-is on Streamlit Community Cloud (entry point:
-streamlit_app.py).
+Captures a single photo from the browser's camera, runs MediaPipe's
+HandLandmarker (Tasks API) to find hand landmarks, then classifies the
+sign with the trained sklearn model. Deploy as-is on Streamlit Community
+Cloud (entry point: streamlit_app.py).
+
+Uses the Tasks API instead of the legacy `mp.solutions.hands` because
+newer mediapipe releases (needed for newer Python versions on hosted
+platforms) dropped `mp.solutions` entirely.
 """
 
 import os
 import pickle
 
+import cv2
 import mediapipe as mp
 import numpy as np
 import streamlit as st
+from mediapipe.tasks import python as mp_tasks
+from mediapipe.tasks.python import vision as mp_vision
 from PIL import Image
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "src", "model", "sign_model.pkl")
 ENCODER_PATH = os.path.join(BASE_DIR, "src", "model", "label_encoder.pkl")
+HAND_LANDMARKER_PATH = os.path.join(BASE_DIR, "assets", "hand_landmarker.task")
 
 
 @st.cache_resource
@@ -30,13 +38,14 @@ def load_model():
 
 
 @st.cache_resource
-def load_hands():
-    mp_hands = mp.solutions.hands
-    return mp_hands.Hands(
-        static_image_mode=True,
-        max_num_hands=1,
-        min_detection_confidence=0.6,
+def load_hand_landmarker():
+    base_options = mp_tasks.BaseOptions(model_asset_path=HAND_LANDMARKER_PATH)
+    options = mp_vision.HandLandmarkerOptions(
+        base_options=base_options,
+        num_hands=1,
+        min_hand_detection_confidence=0.6,
     )
+    return mp_vision.HandLandmarker.create_from_options(options)
 
 
 st.set_page_config(page_title="Hand Sign Detector", page_icon="🤟")
@@ -47,31 +56,43 @@ st.write(
 )
 
 model, le = load_model()
-hands = load_hands()
-mp_hands = mp.solutions.hands
-mp_draw = mp.solutions.drawing_utils
+landmarker = load_hand_landmarker()
 
 photo = st.camera_input("Show a hand sign to the camera")
 
 if photo is not None:
     image = np.array(Image.open(photo).convert("RGB"))
-    result = hands.process(image)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image)
+    result = landmarker.detect(mp_image)
 
     annotated = image.copy()
+    h, w, _ = annotated.shape
 
-    if result.multi_hand_landmarks:
-        for hand_lms in result.multi_hand_landmarks:
-            mp_draw.draw_landmarks(annotated, hand_lms, mp_hands.HAND_CONNECTIONS)
+    if result.hand_landmarks:
+        hand_landmarks = result.hand_landmarks[0]
 
-            features = []
-            for lm in hand_lms.landmark:
-                features.extend([lm.x, lm.y, lm.z])
-            features = np.array(features).reshape(1, -1)
+        for connection in mp_vision.HandLandmarksConnections.HAND_CONNECTIONS:
+            start = hand_landmarks[connection.start]
+            end = hand_landmarks[connection.end]
+            cv2.line(
+                annotated,
+                (int(start.x * w), int(start.y * h)),
+                (int(end.x * w), int(end.y * h)),
+                (0, 200, 0),
+                2,
+            )
+        for lm in hand_landmarks:
+            cv2.circle(annotated, (int(lm.x * w), int(lm.y * h)), 4, (0, 140, 255), -1)
 
-            pred_idx = model.predict(features)[0]
-            pred_prob = model.predict_proba(features)[0]
-            confidence = pred_prob[pred_idx]
-            predicted_letter = le.inverse_transform([pred_idx])[0]
+        features = []
+        for lm in hand_landmarks:
+            features.extend([lm.x, lm.y, lm.z])
+        features = np.array(features).reshape(1, -1)
+
+        pred_idx = model.predict(features)[0]
+        pred_prob = model.predict_proba(features)[0]
+        confidence = pred_prob[pred_idx]
+        predicted_letter = le.inverse_transform([pred_idx])[0]
 
         st.image(annotated, caption="Detected hand landmarks")
         st.success(f"Predicted sign: **{predicted_letter}** ({confidence * 100:.1f}% confidence)")
